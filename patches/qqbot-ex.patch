@@ -275,6 +275,12 @@
      // cordis.patch.yml（dsh.bundle.patch 分发物）、源码 checkout 根也有同名
 --- a/lib/client.js
 +++ b/lib/client.js
+@@ -1,4 +1,4 @@
+ window.__ModuleLoader__.load({
+-	id: "@tencent-connect/dsh-qqbot",
++	id: "dsh-qqbot-ex",
+ 	factory: (require) => {
+ 		var module = { exports: {} };
 @@ -861,7 +861,15 @@
  				onChange: (v) => {
  					patch("directPrompt", v);

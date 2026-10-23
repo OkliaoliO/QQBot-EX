@@ -8,6 +8,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createContext, runInContext } from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -43,6 +44,29 @@ const patch = readFileSync(join(root, 'cordis.patch.yml'), 'utf8');
 expect(/id:\s*im-qqbot\b/.test(patch), 'cordis.patch.yml must insert row id im-qqbot');
 expect(/name:\s*'dsh-qqbot-ex'/.test(patch), "cordis.patch.yml must set name: 'dsh-qqbot-ex'");
 expect(/workspace:\s*''/.test(patch), 'cordis.patch.yml should default workspace to empty string');
+
+// 客户端 bundle 必须以本包名注册：宿主按 row id（= 包名）查找 __ModuleLoader__ 工厂，
+// 注册成上游包名会被判为「loaded without registering」，整个客户端插件拒绝加载。
+// 这里直接执行 bundle，复刻宿主 client-modules 的 id 校验。
+const clientBundle = readFileSync(join(root, 'lib/client.js'), 'utf8');
+const clientRegistry = new Map();
+runInContext(clientBundle, createContext({
+  window: { __ModuleLoader__: { load: (entry) => clientRegistry.set(entry.id, entry) } },
+  console,
+  setTimeout,
+  clearTimeout,
+  setInterval,
+  clearInterval,
+  fetch: () => Promise.reject(new Error('verify: network disabled')),
+}), { filename: 'lib/client.js' });
+expect(
+  clientRegistry.has(pkg.name),
+  `lib/client.js must register id "${pkg.name}" via __ModuleLoader__.load (registered: ${JSON.stringify([...clientRegistry.keys()])})`,
+);
+if (clientRegistry.has(pkg.name)) {
+  const clientModule = clientRegistry.get(pkg.name).factory(() => ({}));
+  expect(typeof clientModule?.apply === 'function', 'lib/client.js must export apply()');
+}
 
 const markers = [
   ['dist/config.js', 'workspace: Schema.string', 'ConfigSchema.workspace'],

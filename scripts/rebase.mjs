@@ -345,7 +345,18 @@ const edits = [
     ),
   },
 
-  // ── 5. 设置页 UI：工作区输入框 ──
+  // ── 5. 客户端 bundle 身份：__ModuleLoader__ 的 id 必须是本包名 ──
+  // 宿主按「包名」登记/查找客户端模块（dsh-client-modules 的 graph row id），
+  // 上游 bundle 里写死的是它自己的包名。改名后不改这里，宿主会报
+  // `loaded without registering "<pkg>" via __ModuleLoader__.load` 并拒绝加载客户端插件。
+  {
+    file: 'lib/client.js',
+    label: 'client module id = package name',
+    from: 'id: "@tencent-connect/dsh-qqbot",',
+    to: 'id: "dsh-qqbot-ex",',
+  },
+
+  // ── 6. 设置页 UI：工作区输入框 ──
   {
     file: 'lib/client.js',
     label: 'ConfigPanel workspace field',

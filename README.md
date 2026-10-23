@@ -157,7 +157,7 @@ npx @deepseek-ai/dsh plugin --profile desktop add git+https://github.com/Okliaol
 - `dist/gateway/bootstrap.js`：启动时解析目录、`workspaceRegistry.create()` 登记、注入工作区实体；
 - `dist/setup/bind-routes.js`：设置页配置路由允许读写 `workspace`，GET 回显生效 `cwd`；
 - `dist/shared/utils.js`：`getProfileDir()` 优先使用 `DSH_PROFILE_DIR`；
-- `lib/client.js`：设置页新增「新对话所在工作区」输入框。
+- `lib/client.js`：设置页新增「新对话所在工作区」输入框；`__ModuleLoader__.load` 的 `id` 改为本包名（上游写死 `@tencent-connect/dsh-qqbot`，改名后宿主会拒绝加载客户端插件）。
 
 完整 diff 见 [`patches/qqbot-ex.patch`](patches/qqbot-ex.patch)。
 

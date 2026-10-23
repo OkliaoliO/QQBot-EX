@@ -2,6 +2,18 @@
 
 本文件记录 QQBot-EX 相对上游 `@tencent-connect/dsh-qqbot` 的变化。
 
+## [0.5.2-ex.2] - 2026-10-23
+
+### 修复
+
+- **客户端插件无法加载**：`lib/client.js` 里 `window.__ModuleLoader__.load({ id })` 仍注册上游包名
+  `@tencent-connect/dsh-qqbot`，而宿主按当前包名 `dsh-qqbot-ex` 查找工厂，导致
+  `client-modules: could not load "dsh-qqbot-ex": ... loaded without registering "dsh-qqbot-ex"`
+  ——设置页「本页面的插件」显示未加载，QQ Bot 设置栏目 / 侧栏绑定入口都不出现。
+  现在 `id` 与本包名一致。
+- `scripts/verify.mjs` 增加回归检查：执行客户端 bundle，断言其注册 id 等于 `package.json.name` 且导出 `apply()`。
+- `scripts/rebase.mjs` 增加「客户端 bundle id = 包名」重写步骤，后续跟进上游不会再漏。
+
 ## [0.5.2-ex.1] - 2026-10-23
 
 ### 新增
