@@ -58,6 +58,24 @@ QQBot-EX 把这三件事一起处理了。
 
 `getProfileDir()` 优先读取 `DSH_PROFILE_DIR`。dsh 启动 profile 时会设置该变量，所以用本地路径、`link:` 或 `file:` 方式安装时，扫码凭据仍能写回正确的 profile，而不是因为插件目录不在 `node_modules` 下而定位失败。
 
+### 4. 分条发送工具 `qqbot_send_text`
+
+上游一条回复只会变成一条 QQ 消息（正文统一由 outbound 在回合结束时发出）。本分支新增内置工具 `qqbot_send_text(text)`：模型可以在回复过程中**立即**把一句话作为一条独立消息发出，从而把一次回复拆成 2～3 条气泡。
+
+- 工具名 `qqbot_send_text`，参数只有 `text`（一条消息的正文）；
+- 每条用户消息最多调用 **3 次**，与最后的正文合计不超过 4 条（插件被动回复限额）；
+- 走插件 `sender`，带 msgId 兜底与被动回复限额管控；
+- 只在 QQ 会话内可用；其他会话调用返回「无法确定发送目标」。
+
+```text
+qqbot_send_text(text="你怎么现在才回我呀")   → 气泡 1
+（正常回复）……算了，回来就好。                → 气泡 2
+```
+
+模型看到的工具说明：
+
+> Send one short text message to the current QQ conversation as its own bubble. Use it when a reply should be several short messages instead of one long message: call this tool once per message (at most 3 times per user message). Only works inside a QQ conversation. The final answer is delivered as a message too, so do not repeat text already sent with this tool.
+
 ---
 
 ## 安装
@@ -154,12 +172,14 @@ npx @deepseek-ai/dsh plugin --profile desktop add git+https://github.com/Okliaol
 
 - `dist/config.js` / `dist/config.d.ts`：新增 `workspace` 配置；
 - `dist/session/session-manager.js`：`effectiveCwd()`、`attachToWorkspace()`、工作区不一致自动换会话；
-- `dist/gateway/bootstrap.js`：启动时解析目录、`workspaceRegistry.create()` 登记、注入工作区实体；
+- `dist/gateway/bootstrap.js`：启动时解析目录、`workspaceRegistry.create()` 登记、注入工作区实体；注册 `qqbot_send_text` 工具；
+- `dist/text/send-text-tool.js`：新增，`qqbot_send_text` 工具实现；
 - `dist/setup/bind-routes.js`：设置页配置路由允许读写 `workspace`，GET 回显生效 `cwd`；
 - `dist/shared/utils.js`：`getProfileDir()` 优先使用 `DSH_PROFILE_DIR`；
 - `lib/client.js`：设置页新增「新对话所在工作区」输入框；`__ModuleLoader__.load` 的 `id` 改为本包名（上游写死 `@tencent-connect/dsh-qqbot`，改名后宿主会拒绝加载客户端插件）。
 
-完整 diff 见 [`patches/qqbot-ex.patch`](patches/qqbot-ex.patch)。
+完整 diff 见 [`patches/qqbot-ex.patch`](patches/qqbot-ex.patch)（工作区与客户端改动）；
+`qqbot_send_text` 的改动是独立新增，见 [`patches/send-text-tool.patch`](patches/send-text-tool.patch)（相对 `0.5.2-ex.2`）。
 
 未修改：网关协议、消息中间件、QQ SDK 调用、命令、媒体/视觉/附件能力、扫码绑定流程。
 

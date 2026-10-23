@@ -2,6 +2,13 @@
 
 本文件记录 QQBot-EX 相对上游 `@tencent-connect/dsh-qqbot` 的变化。
 
+## [0.5.2-ex.3] - 2026-10-23
+
+### 新增
+
+- 内置工具 `qqbot_send_text(text)`：把一段文本作为一条独立 QQ 消息**立即**发出，用于把一条回复拆成 2～3 条气泡。每条用户消息最多调用 3 次；与最后的正文合计不超过 4 条（插件被动回复限额）。非 QQ 会话调用返回「无法确定发送目标」。
+- `dist/text/send-text-tool.js`：工具实现；`dist/gateway/bootstrap.js` 中注册。
+
 ## [0.5.2-ex.2] - 2026-10-23
 
 ### 修复
