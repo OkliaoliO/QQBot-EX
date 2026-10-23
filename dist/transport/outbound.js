@@ -10,6 +10,7 @@ const SILENT_TURN_ERROR_CODES = new Set(['STREAM_CLOSED']);
  */
 class OutboundRouter {
     buffers = new Map();
+    pending = new Map();
     toolCalls = new Map();
     manager;
     bot;
@@ -64,27 +65,23 @@ class OutboundRouter {
             && record.replyTarget.scope === 'c2c'
             && !!record.replyTarget.msgId;
     }
-    /** 完整 assistant 消息：有流式 buffer 则 flush，否则直接发送文本块 */
+    /** 完整 assistant 消息：暂存整轮文本，等 turn/end 再按换行拆条 */
     onMessage(sessionId, record, event) {
         const buffer = this.buffers.get(sessionId);
-        if (buffer !== undefined && buffer.text.trim()) {
-            void buffer.flush();
+        if (buffer !== undefined) {
+            buffer.cancel();
             this.buffers.delete(sessionId);
-            return;
         }
         const textParts = [];
         for (const block of event.content) {
             if (block.type === 'text' && block.text)
                 textParts.push(block.text);
         }
-        const fullText = textParts.join('\n');
-        if (!fullText.trim())
+        const text = textParts.join('\n');
+        if (!text.trim())
             return;
-        // 按换行拆成多条气泡（每行一条，最多 4 条）
-        for (const part of splitBubbles(fullText)) {
-            void this.send(record, part, 'sendMarkdown');
-        }
-        this.buffers.delete(sessionId);
+        const prev = this.pending.get(sessionId);
+        this.pending.set(sessionId, prev ? `${prev}\n${text}` : text);
     }
     /** 工具调用：仅记录，不发送（避免刷屏，等待结果） */
     onToolCall(event) {
@@ -103,23 +100,29 @@ class OutboundRouter {
             return;
         void this.send(record, text, 'sendToolResult');
     }
-    /** 轮次结束：清理 buffer，异常结束时告知用户 */
+    /** 轮次结束：整轮文本按换行拆条、顺序发出，再处理异常提示 */
     onTurnEnd(sessionId, record, event) {
         const buffer = this.buffers.get(sessionId);
         if (buffer !== undefined) {
-            if (buffer.text.trim()) {
-                void buffer.flush();
-            }
-            else {
-                buffer.cancel();
-            }
+            buffer.cancel();
             this.buffers.delete(sessionId);
         }
+        void this.flushTurn(sessionId, record);
         const failure = extractTurnError(event.reason);
         if (failure !== undefined && !SILENT_TURN_ERROR_CODES.has(failure.code)) {
             void this.send(record, `⚠️ 本轮异常结束\n\`${failure.code}\`: ${failure.message}`, 'sendTurnEndError');
         }
         this.logger.debug(`im-qqbot: turn/end sessionId=${sessionId}`);
+    }
+    /** 把整轮暂存文本按换行拆条，逐条顺序发送（必须串行，否则消息可能乱序） */
+    async flushTurn(sessionId, record) {
+        const pending = this.pending.get(sessionId);
+        this.pending.delete(sessionId);
+        if (pending === undefined || !pending.trim())
+            return;
+        for (const part of splitBubbles(pending)) {
+            await this.send(record, part, 'sendMarkdown');
+        }
     }
     /** 统一发送：切分 + 逐 chunk 发送 + 错误记录 */
     async send(record, text, tag) {
