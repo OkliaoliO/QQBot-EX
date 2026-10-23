@@ -9,6 +9,11 @@
 - **按换行自动分条**：出站时把回复按非空行拆成多条 QQ 消息，最多 4 条，多出的合并到最后一条；空行只作分隔，``` 代码块整块保留。
   `dist/transport/split-bubbles.js`（新增）；`outbound.js` 与 `outbound-buffer.js` 调用。需配合 `streaming: false`。
 
+### 文档
+
+- 重写 `README.md`：按 功能 / 安装 / 配置 / 工作区行为 / 与上游差异 / 维护 / 兼容性 分节。
+- `patches/qqbot-ex.patch` 重新生成为相对上游 `0.5.2` 的完整 diff（含分条与 `qqbot_send_text`）；删除已被覆盖的 `send-text-tool.patch`。
+
 ## [0.5.2-ex.3] - 2026-10-23
 
 ### 新增

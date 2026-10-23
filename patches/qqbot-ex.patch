@@ -1,16 +1,5 @@
 # QQBot-EX changes against @tencent-connect/dsh-qqbot 0.5.2
 # Apply inside a pristine package directory with: git apply -p1 patches/qqbot-ex.patch
-
---- a/dist/config.js
-+++ b/dist/config.js
-@@ -16,6 +16,7 @@
-     model: Schema.string().description('Model name'),
-     preset: Schema.string().description('Agent preset id'),
-     cwd: Schema.string().description('Agent working directory'),
-+    workspace: Schema.string().description('新对话所在工作区目录（绝对路径，留空回落到 cwd）'),
-     requireMention: Schema.boolean().default(true).description('群聊是否需要@bot触发'),
-     groupPrompt: Schema.string().description('群聊额外system prompt'),
-     directPrompt: Schema.string().description('私聊额外system prompt'),
 --- a/dist/config.d.ts
 +++ b/dist/config.d.ts
 @@ -55,6 +55,8 @@
@@ -22,6 +11,99 @@
      /** 是否启用群消息 @mention 门控 */
      requireMention: boolean;
      /** 群聊额外 system prompt */
+--- a/dist/config.js
++++ b/dist/config.js
+@@ -16,6 +16,7 @@
+     model: Schema.string().description('Model name'),
+     preset: Schema.string().description('Agent preset id'),
+     cwd: Schema.string().description('Agent working directory'),
++    workspace: Schema.string().description('新对话所在工作区目录（绝对路径，留空回落到 cwd）'),
+     requireMention: Schema.boolean().default(true).description('群聊是否需要@bot触发'),
+     groupPrompt: Schema.string().description('群聊额外system prompt'),
+     directPrompt: Schema.string().description('私聊额外system prompt'),
+--- a/dist/gateway/bootstrap.js
++++ b/dist/gateway/bootstrap.js
+@@ -12,6 +12,10 @@
+ import { startMediaCleanup } from "../media/media-cleaner.js";
+ import { ensureVisionInputModal, registerDescribeImageTool } from "../media/vision-tool.js";
+ import { registerSendFileTool } from "../media/send-file-tool.js";
++import { registerSendTextTool } from "../text/send-text-tool.js";
++import { mkdir } from 'node:fs/promises';
++import { homedir } from 'node:os';
++import { isAbsolute, resolve } from 'node:path';
+ /**
+  * interaction 统一分发器：按 button_data 的顶层 `t` 判别字段，路由到对应
+  * channel（question / approval）。QQ 只有一个 interaction 入口，集中路由
+@@ -30,8 +34,59 @@
+         return manager.approvalChannel?.handleInteraction(event) ?? false;
+     return false;
+ }
++/**
++ * 解析并登记「新对话工作区」。
++ *
++ * - 支持 ~ 展开；相对路径按宿主进程 cwd 解析；
++ * - 目录不存在时递归创建；
++ * - 通过 ctx.workspaceRegistry 登记（已存在则复用），返回工作区实体供新会话 attach；
++ * - 登记失败不阻断启动，仅告警（会话仍使用该目录，只是不进入工作区列表）。
++ *
++ * @returns {{ path: string, workspace?: unknown }} 规范化路径 + 工作区实体；
++ *          未配置或目录不可用时返回 undefined（回落 cwd）。
++ */
++async function resolveWorkspace(ctx, workspace, logger) {
++    const raw = typeof workspace === 'string' ? workspace.trim() : '';
++    if (!raw)
++        return undefined;
++    let path = raw;
++    if (path === '~')
++        path = homedir();
++    else if (path.startsWith('~/'))
++        path = resolve(homedir(), path.slice(2));
++    if (!isAbsolute(path))
++        path = resolve(process.cwd(), path);
++    try {
++        await mkdir(path, { recursive: true });
++    }
++    catch (err) {
++        logger.error(`workspace unavailable: ${path} (${err instanceof Error ? err.message : String(err)}) — falling back to cwd`);
++        return undefined;
++    }
++    try {
++        const registry = ctx.get('workspaceRegistry');
++        if (registry && typeof registry.create === 'function') {
++            const registered = await registry.create(path);
++            logger.info(`workspace ready: ${registered.path}${registered.title ? ` (${registered.title})` : ''}`);
++            // 用 realpath 规范化后的 workspace.path 作为 session cwd，
++            // 保证 attachSession 的 canonical cwd 校验通过（符号链接场景）。
++            return { path: registered.path, workspace: registered };
++        }
++        logger.warn('workspaceRegistry unavailable — QQ conversations will not be grouped under a workspace');
++    }
++    catch (err) {
++        logger.warn(`workspace registration failed: ${path} (${err instanceof Error ? err.message : String(err)}) — sessions still use this directory`);
++    }
++    return { path, workspace: void 0 };
++}
++
+ export async function bootstrapGateway(ctx, agents, config, logger) {
++    // 解析「新对话工作区」：确保目录存在并登记为宿主工作区；失败/未配置时回落到 cwd。
++    const resolvedWorkspace = await resolveWorkspace(ctx, config.workspace, logger);
++    config = { ...config, workspace: resolvedWorkspace?.path };
+     const manager = new SessionManager(ctx, agents, config, logger);
++    // 新会话创建后需要显式 attach 才会出现在工作区列表中（见 SessionManager）
++    manager.workspace = resolvedWorkspace?.workspace;
+     // ── 初始化 QQ Bot SDK ──
+     const userAgent = buildUserAgent();
+     const bot = new QQBot({
+@@ -139,6 +194,9 @@
+         sendFile: (target, source, opts) => bot.sendFile(resolveReplyTarget(target, replyLimiter, false), source, opts),
+     };
+     registerSendFileTool(ctx, mediaSender, manager, config, logger);
++    // ── 文本分条发送工具注册（qqbot_send_text） ──
++    // 走 sender（含被动回复限额与 msgId 兜底），每轮最多 3 次。
++    registerSendTextTool(ctx, sender, manager, logger);
+     // ── 生命周期 ──
+     ctx
+         .effect(() => {
 --- a/dist/session/session-manager.js
 +++ b/dist/session/session-manager.js
 @@ -36,6 +36,8 @@
@@ -33,12 +115,10 @@
      constructor(ctx, agents, config, logger) {
          this.ctx = ctx;
          this.agents = agents;
-@@ -52,6 +54,42 @@
-             this.approvalChannel?.cancelPending(key);
-         });
+@@ -54,6 +56,42 @@
          this.registerScopePromptInjection();
-+    }
-+    /**
+     }
+     /**
 +     * 新会话的工作目录：workspace > cwd > 进程 cwd。
 +     * workspace 同时决定新会话在宿主工作区列表中的归属（宿主按 session header 的 cwd 归组）。
 +     */
@@ -73,9 +153,11 @@
 +            return false;
 +        const cwd = record.agent?.session?.header?.cwd;
 +        return cwd !== void 0 && cwd !== workspace.path;
-     }
-     /**
++    }
++    /**
       * 通过 system-prompt/assemble waterfall 注入群聊/私聊额外 system prompt。
+      *
+      * 该事件在每次 turn 构建 request 时触发；此处按会话 scope（群聊/私聊）
 @@ -237,7 +275,7 @@
              sessionId: childId,
              seed,
@@ -145,78 +227,6 @@
          return record;
      }
      findBySessionId(sessionId) {
---- a/dist/gateway/bootstrap.js
-+++ b/dist/gateway/bootstrap.js
-@@ -12,6 +12,9 @@
- import { startMediaCleanup } from "../media/media-cleaner.js";
- import { ensureVisionInputModal, registerDescribeImageTool } from "../media/vision-tool.js";
- import { registerSendFileTool } from "../media/send-file-tool.js";
-+import { mkdir } from 'node:fs/promises';
-+import { homedir } from 'node:os';
-+import { isAbsolute, resolve } from 'node:path';
- /**
-  * interaction 统一分发器：按 button_data 的顶层 `t` 判别字段，路由到对应
-  * channel（question / approval）。QQ 只有一个 interaction 入口，集中路由
-@@ -30,8 +33,59 @@
-         return manager.approvalChannel?.handleInteraction(event) ?? false;
-     return false;
- }
-+/**
-+ * 解析并登记「新对话工作区」。
-+ *
-+ * - 支持 ~ 展开；相对路径按宿主进程 cwd 解析；
-+ * - 目录不存在时递归创建；
-+ * - 通过 ctx.workspaceRegistry 登记（已存在则复用），返回工作区实体供新会话 attach；
-+ * - 登记失败不阻断启动，仅告警（会话仍使用该目录，只是不进入工作区列表）。
-+ *
-+ * @returns {{ path: string, workspace?: unknown }} 规范化路径 + 工作区实体；
-+ *          未配置或目录不可用时返回 undefined（回落 cwd）。
-+ */
-+async function resolveWorkspace(ctx, workspace, logger) {
-+    const raw = typeof workspace === 'string' ? workspace.trim() : '';
-+    if (!raw)
-+        return undefined;
-+    let path = raw;
-+    if (path === '~')
-+        path = homedir();
-+    else if (path.startsWith('~/'))
-+        path = resolve(homedir(), path.slice(2));
-+    if (!isAbsolute(path))
-+        path = resolve(process.cwd(), path);
-+    try {
-+        await mkdir(path, { recursive: true });
-+    }
-+    catch (err) {
-+        logger.error(`workspace unavailable: ${path} (${err instanceof Error ? err.message : String(err)}) — falling back to cwd`);
-+        return undefined;
-+    }
-+    try {
-+        const registry = ctx.get('workspaceRegistry');
-+        if (registry && typeof registry.create === 'function') {
-+            const registered = await registry.create(path);
-+            logger.info(`workspace ready: ${registered.path}${registered.title ? ` (${registered.title})` : ''}`);
-+            // 用 realpath 规范化后的 workspace.path 作为 session cwd，
-+            // 保证 attachSession 的 canonical cwd 校验通过（符号链接场景）。
-+            return { path: registered.path, workspace: registered };
-+        }
-+        logger.warn('workspaceRegistry unavailable — QQ conversations will not be grouped under a workspace');
-+    }
-+    catch (err) {
-+        logger.warn(`workspace registration failed: ${path} (${err instanceof Error ? err.message : String(err)}) — sessions still use this directory`);
-+    }
-+    return { path, workspace: void 0 };
-+}
-+
- export async function bootstrapGateway(ctx, agents, config, logger) {
-+    // 解析「新对话工作区」：确保目录存在并登记为宿主工作区；失败/未配置时回落到 cwd。
-+    const resolvedWorkspace = await resolveWorkspace(ctx, config.workspace, logger);
-+    config = { ...config, workspace: resolvedWorkspace?.path };
-     const manager = new SessionManager(ctx, agents, config, logger);
-+    // 新会话创建后需要显式 attach 才会出现在工作区列表中（见 SessionManager）
-+    manager.workspace = resolvedWorkspace?.workspace;
-     // ── 初始化 QQ Bot SDK ──
-     const userAgent = buildUserAgent();
-     const bot = new QQBot({
 --- a/dist/setup/bind-routes.js
 +++ b/dist/setup/bind-routes.js
 @@ -1,4 +1,5 @@
@@ -273,14 +283,222 @@
      // 主策略：跨过 node_modules 边界后，优先命中 cordis.patch.yml（凭据写入
      // 目标），其次 pnpm-workspace.yaml。跨越守卫是关键——插件包自身随包携带
      // cordis.patch.yml（dsh.bundle.patch 分发物）、源码 checkout 根也有同名
+--- a/dist/text/send-text-tool.js
++++ b/dist/text/send-text-tool.js
+@@ -0,0 +1,96 @@
++/**
++ * 内置 qqbot_send_text 工具 — 把一段文本作为一条独立的 QQ 消息发出去。
++ *
++ * 用途：让模型把一条回复拆成 2～3 条短消息（QQ 一轮最多 5 个气泡）。
++ * 与正文的区别：正文在回合结束时由 outbound 统一发送，只会成为一条消息；
++ * 调用本工具则在调用当下立即发出一条。
++ *
++ * 限制：每次收信（同一 msgId）最多调用 3 次，避免刷屏；
++ * 与 outbound 的被动回复限额（ReplyLimiter limit=4）相加正好不超过 4 条。
++ */
++export const SEND_TEXT_TOOL_NAME = 'qqbot_send_text';
++
++const MAX_PER_INBOUND = 3;
++const MAX_TRACKED = 200;
++
++/** 每条入站消息的发送计数：msgId（没有时退回 agent）→ 次数 */
++const counters = new Map();
++
++function targetKey(target, agent) {
++    return target?.msgId !== undefined && target?.msgId !== ''
++        ? `msg:${target.msgId}`
++        : `agent:${String(agent)}`;
++}
++
++function takeSlot(key) {
++    const used = counters.get(key) ?? 0;
++    if (used >= MAX_PER_INBOUND)
++        return false;
++    counters.set(key, used + 1);
++    if (counters.size > MAX_TRACKED) {
++        const first = counters.keys().next().value;
++        if (first !== undefined)
++            counters.delete(first);
++    }
++    return true;
++}
++
++/** 注册 qqbot_send_text 工具（tools 服务缺失时优雅降级） */
++export function registerSendTextTool(ctx, sender, manager, logger) {
++    const tools = ctx.get('tools');
++    if (!tools?.register) {
++        logger.warn('im-qqbot: tools 服务不可用，qqbot_send_text 工具未注册');
++        return;
++    }
++    const definition = {
++        name: SEND_TEXT_TOOL_NAME,
++        description: 'Send one short text message to the current QQ conversation as its own bubble. '
++            + 'Use it when a reply should be several short messages instead of one long message: '
++            + 'call this tool once per message (at most 3 times per user message). '
++            + 'Only works inside a QQ conversation. The final answer is delivered as a message too, '
++            + 'so do not repeat text already sent with this tool.',
++        parameters: {
++            type: 'object',
++            properties: {
++                text: {
++                    type: 'string',
++                    description: '一条消息的正文，建议一到两句、一百字以内。',
++                },
++            },
++            required: ['text'],
++            additionalProperties: false,
++        },
++        output: {
++            schema: {
++                type: 'object',
++                properties: {
++                    sent: { type: 'boolean' },
++                    length: { type: 'integer' },
++                },
++                required: ['sent', 'length'],
++                additionalProperties: false,
++            },
++            render: (_args, value) => {
++                const v = value;
++                return [{ type: 'text', text: `已发送 ${v.length} 字 → QQ` }];
++            },
++        },
++        async execute(args, exec) {
++            const text = typeof args.text === 'string' ? args.text.trim() : '';
++            if (text.length === 0)
++                throw new Error('qqbot_send_text: `text` 不能为空');
++            const record = exec.agent !== undefined ? manager.findByAgent(exec.agent) : undefined;
++            const target = record?.replyTarget;
++            if (target === undefined)
++                throw new Error('qqbot_send_text: 无法确定发送目标（仅适用于 QQ 会话）');
++            const key = targetKey(target, exec.agent);
++            if (!takeSlot(key))
++                throw new Error(`qqbot_send_text: 本条消息已发送 ${MAX_PER_INBOUND} 次，超过上限`);
++            await sender.sendMarkdown(target, text);
++            logger.info(`im-qqbot: qqbot_send_text 发送 ${text.length} 字 → ${target.scope}:${target.targetId}`);
++            return { sent: true, length: text.length };
++        },
++    };
++    tools.register(definition);
++    logger.info('im-qqbot: qqbot_send_text 工具已注册');
++}
+--- a/dist/transport/outbound-buffer.js
++++ b/dist/transport/outbound-buffer.js
+@@ -1,5 +1,6 @@
+ import { chunkMarkdownText } from "./chunker.js";
+ import { StreamingWriter } from "./streaming-writer.js";
++import { splitBubbles } from "./split-bubbles.js";
+ /** 流式输出节流间隔(ms)：连续 chunk 累积后停顿该间隔才推送 */
+ const STREAM_THROTTLE_MS = 200;
+ export class OutboundBuffer {
+@@ -41,9 +42,11 @@
+                     return;
+             }
+             // 降级：静态发送（writer 不存在 or 流式失败）
+-            const chunks = chunkMarkdownText(this.buffer, this.limit);
+-            for (const chunk of chunks) {
+-                await this.bot.sendMarkdown(this.record.replyTarget, chunk);
++            // 按换行拆成多条气泡，每条再按字符上限切分
++            for (const part of splitBubbles(this.buffer)) {
++                for (const chunk of chunkMarkdownText(part, this.limit)) {
++                    await this.bot.sendMarkdown(this.record.replyTarget, chunk);
++                }
+             }
+         }
+         catch (err) {
+--- a/dist/transport/outbound.js
++++ b/dist/transport/outbound.js
+@@ -1,5 +1,6 @@
+ import { chunkMarkdownText } from "./chunker.js";
+ import { OutboundBuffer } from "./outbound-buffer.js";
++import { splitBubbles } from "./split-bubbles.js";
+ import { formatToolResult } from "./tool-presenter.js";
+ import { parseEvent, extractTurnError, } from "./events.js";
+ /** 不展示给用户的轮次错误码（底层传输/网络错误，对用户无意义，且常被重试兜住） */
+@@ -79,7 +80,10 @@
+         const fullText = textParts.join('\n');
+         if (!fullText.trim())
+             return;
+-        void this.send(record, fullText, 'sendMarkdown');
++        // 按换行拆成多条气泡（每行一条，最多 4 条）
++        for (const part of splitBubbles(fullText)) {
++            void this.send(record, part, 'sendMarkdown');
++        }
+         this.buffers.delete(sessionId);
+     }
+     /** 工具调用：仅记录，不发送（避免刷屏，等待结果） */
+--- a/dist/transport/split-bubbles.js
++++ b/dist/transport/split-bubbles.js
+@@ -0,0 +1,60 @@
++/**
++ * 按换行把一条回复拆成多条 QQ 消息（气泡）。
++ *
++ * 规则：
++ * - 每个非空行算一条；
++ * - 空行只作分隔，不单独成条；
++ * - ``` 围起来的代码块整块算一条（块内的换行不拆）；
++ * - 超过 max 条时，多出来的合并到最后一条。
++ */
++export const MAX_BUBBLES = 4;
++
++export function splitBubbles(text, max = MAX_BUBBLES) {
++    if (typeof text !== 'string' || text.trim() === '')
++        return [];
++    const parts = [];
++    let cur = [];
++    let inFence = false;
++    const flush = () => {
++        if (cur.length === 0)
++            return;
++        const s = cur.join('\n').trim();
++        if (s)
++            parts.push(s);
++        cur = [];
++    };
++    for (const raw of text.split('\n')) {
++        const line = raw.replace(/\s+$/, '');
++        const isFence = line.trimStart().startsWith('```');
++        if (isFence) {
++            if (inFence) {
++                cur.push(line);
++                inFence = false;
++                flush();
++            }
++            else {
++                flush();
++                inFence = true;
++                cur.push(line);
++            }
++            continue;
++        }
++        if (inFence) {
++            cur.push(line);
++            continue;
++        }
++        if (line.trim() === '') {
++            flush();
++            continue;
++        }
++        flush();
++        cur.push(line);
++    }
++    flush();
++    if (parts.length > max) {
++        const head = parts.slice(0, max - 1);
++        const tail = parts.slice(max - 1).join('\n');
++        return [...head, tail];
++    }
++    return parts;
++}
 --- a/lib/client.js
 +++ b/lib/client.js
-@@ -1,4 +1,4 @@
+@@ -1,5 +1,5 @@
  window.__ModuleLoader__.load({
 -	id: "@tencent-connect/dsh-qqbot",
 +	id: "dsh-qqbot-ex",
  	factory: (require) => {
  		var module = { exports: {} };
+ 		var exports = module.exports;
 @@ -861,7 +861,15 @@
  				onChange: (v) => {
  					patch("directPrompt", v);
