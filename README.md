@@ -58,23 +58,34 @@ QQBot-EX 把这三件事一起处理了。
 
 `getProfileDir()` 优先读取 `DSH_PROFILE_DIR`。dsh 启动 profile 时会设置该变量，所以用本地路径、`link:` 或 `file:` 方式安装时，扫码凭据仍能写回正确的 profile，而不是因为插件目录不在 `node_modules` 下而定位失败。
 
-### 4. 分条发送工具 `qqbot_send_text`
+### 4. 按换行自动分条（多气泡回复）
 
-上游一条回复只会变成一条 QQ 消息（正文统一由 outbound 在回合结束时发出）。本分支新增内置工具 `qqbot_send_text(text)`：模型可以在回复过程中**立即**把一句话作为一条独立消息发出，从而把一次回复拆成 2～3 条气泡。
+上游一条回复只会变成一条 QQ 消息。本分支在出站处按**换行**自动拆分：每个非空行成为一条独立消息，最多 4 条，多出来的合并到最后一条。空行只作分隔；``` 围起来的代码块整块算一条，不会拆散。
 
-- 工具名 `qqbot_send_text`，参数只有 `text`（一条消息的正文）；
-- 每条用户消息最多调用 **3 次**，与最后的正文合计不超过 4 条（插件被动回复限额）；
-- 走插件 `sender`，带 msgId 兜底与被动回复限额管控；
-- 只在 QQ 会话内可用；其他会话调用返回「无法确定发送目标」。
+```text
+哈哈哈            → 气泡 1
+你不理我          → 气泡 2
+（代码块整块保留）
+```
+
+要点：
+
+- 拆分发生在 `dist/transport/split-bubbles.js`，由 `outbound.js`（静态路径）与 `outbound-buffer.js`（缓冲/降级路径）调用；
+- **必须关闭流式**：`streaming: false`。流式下文字是边生成边更新的单条消息，无法拆分；
+- 每次回复最多 4 条（被动回复限额）。
+
+### 5. 分条发送工具 `qqbot_send_text`（可选）
+
+如果需要在正文之外手动补一条消息，可用内置工具 `qqbot_send_text(text)`：在回复过程中**立即**把一句话作为独立消息发出。
+
+- 每条用户消息最多调用 3 次；
+- 走插件 `sender`，带 msgId 兜底与限额；
+- 只在 QQ 会话内可用，其他会话返回「无法确定发送目标」。
 
 ```text
 qqbot_send_text(text="你怎么现在才回我呀")   → 气泡 1
 （正常回复）……算了，回来就好。                → 气泡 2
 ```
-
-模型看到的工具说明：
-
-> Send one short text message to the current QQ conversation as its own bubble. Use it when a reply should be several short messages instead of one long message: call this tool once per message (at most 3 times per user message). Only works inside a QQ conversation. The final answer is delivered as a message too, so do not repeat text already sent with this tool.
 
 ---
 
@@ -174,6 +185,8 @@ npx @deepseek-ai/dsh plugin --profile desktop add git+https://github.com/Okliaol
 - `dist/session/session-manager.js`：`effectiveCwd()`、`attachToWorkspace()`、工作区不一致自动换会话；
 - `dist/gateway/bootstrap.js`：启动时解析目录、`workspaceRegistry.create()` 登记、注入工作区实体；注册 `qqbot_send_text` 工具；
 - `dist/text/send-text-tool.js`：新增，`qqbot_send_text` 工具实现；
+- `dist/transport/split-bubbles.js`：新增，按换行拆气泡；
+- `dist/transport/outbound.js` / `outbound-buffer.js`：出站时调用 `splitBubbles()`；
 - `dist/setup/bind-routes.js`：设置页配置路由允许读写 `workspace`，GET 回显生效 `cwd`；
 - `dist/shared/utils.js`：`getProfileDir()` 优先使用 `DSH_PROFILE_DIR`；
 - `lib/client.js`：设置页新增「新对话所在工作区」输入框；`__ModuleLoader__.load` 的 `id` 改为本包名（上游写死 `@tencent-connect/dsh-qqbot`，改名后宿主会拒绝加载客户端插件）。

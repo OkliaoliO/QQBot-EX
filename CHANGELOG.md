@@ -2,6 +2,13 @@
 
 本文件记录 QQBot-EX 相对上游 `@tencent-connect/dsh-qqbot` 的变化。
 
+## [0.5.2-ex.4] - 2026-10-23
+
+### 新增
+
+- **按换行自动分条**：出站时把回复按非空行拆成多条 QQ 消息，最多 4 条，多出的合并到最后一条；空行只作分隔，``` 代码块整块保留。
+  `dist/transport/split-bubbles.js`（新增）；`outbound.js` 与 `outbound-buffer.js` 调用。需配合 `streaming: false`。
+
 ## [0.5.2-ex.3] - 2026-10-23
 
 ### 新增

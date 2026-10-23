@@ -1,5 +1,6 @@
 import { chunkMarkdownText } from "./chunker.js";
 import { OutboundBuffer } from "./outbound-buffer.js";
+import { splitBubbles } from "./split-bubbles.js";
 import { formatToolResult } from "./tool-presenter.js";
 import { parseEvent, extractTurnError, } from "./events.js";
 /** 不展示给用户的轮次错误码（底层传输/网络错误，对用户无意义，且常被重试兜住） */
@@ -79,7 +80,10 @@ class OutboundRouter {
         const fullText = textParts.join('\n');
         if (!fullText.trim())
             return;
-        void this.send(record, fullText, 'sendMarkdown');
+        // 按换行拆成多条气泡（每行一条，最多 4 条）
+        for (const part of splitBubbles(fullText)) {
+            void this.send(record, part, 'sendMarkdown');
+        }
         this.buffers.delete(sessionId);
     }
     /** 工具调用：仅记录，不发送（避免刷屏，等待结果） */
