@@ -1,0 +1,294 @@
+# QQBot-EX changes against @tencent-connect/dsh-qqbot 0.5.2
+# Apply inside a pristine package directory with: git apply -p1 patches/qqbot-ex.patch
+
+--- a/dist/config.js
++++ b/dist/config.js
+@@ -16,6 +16,7 @@
+     model: Schema.string().description('Model name'),
+     preset: Schema.string().description('Agent preset id'),
+     cwd: Schema.string().description('Agent working directory'),
++    workspace: Schema.string().description('新对话所在工作区目录（绝对路径，留空回落到 cwd）'),
+     requireMention: Schema.boolean().default(true).description('群聊是否需要@bot触发'),
+     groupPrompt: Schema.string().description('群聊额外system prompt'),
+     directPrompt: Schema.string().description('私聊额外system prompt'),
+--- a/dist/config.d.ts
++++ b/dist/config.d.ts
+@@ -55,6 +55,8 @@
+     preset?: string;
+     /** Agent 工作目录（缺省回落到进程 cwd） */
+     cwd?: string;
++    /** 新对话所在工作区目录（绝对路径，留空回落到 cwd） */
++    workspace?: string;
+     /** 是否启用群消息 @mention 门控 */
+     requireMention: boolean;
+     /** 群聊额外 system prompt */
+--- a/dist/session/session-manager.js
++++ b/dist/session/session-manager.js
+@@ -36,6 +36,8 @@
+     questionChannel;
+     /** 由 bootstrap 注入的审批通道（approval/request → QQ），会话回收时清理其待批审批 */
+     approvalChannel;
++    /** 由 bootstrap 注入的「新对话工作区」实体（可选；用于把新会话登记到工作区） */
++    workspace;
+     constructor(ctx, agents, config, logger) {
+         this.ctx = ctx;
+         this.agents = agents;
+@@ -52,6 +54,42 @@
+             this.approvalChannel?.cancelPending(key);
+         });
+         this.registerScopePromptInjection();
++    }
++    /**
++     * 新会话的工作目录：workspace > cwd > 进程 cwd。
++     * workspace 同时决定新会话在宿主工作区列表中的归属（宿主按 session header 的 cwd 归组）。
++     */
++    effectiveCwd() {
++        return this.config.workspace || this.config.cwd || process.cwd();
++    }
++    /**
++     * 把会话登记到配置的工作区。
++     *
++     * 宿主按 session header 的 cwd 归组，但绕过 sessionController 直接创建的
++     * 会话不会自动出现在工作区里——必须显式 attach 才会进入 workspace 的
++     * sessionIds 账本。header cwd 不匹配（旧会话仍在原工作区）时静默跳过。
++     */
++    async attachToWorkspace(sessionId, agent) {
++        const workspace = this.workspace;
++        if (!workspace || typeof workspace.attachSession !== 'function')
++            return;
++        const cwd = agent?.session?.header?.cwd;
++        if (cwd !== void 0 && cwd !== workspace.path)
++            return;
++        try {
++            await workspace.attachSession(sessionId);
++        }
++        catch (err) {
++            this.logger.warn(`workspace attach failed: session=${sessionId} err=${err instanceof Error ? err.message : String(err)}`);
++        }
++    }
++    /** 目标工作区与当前会话 header cwd 是否不一致（工作区变更后需要换新会话）。 */
++    isWorkspacePlacementStale(record) {
++        const workspace = this.workspace;
++        if (!workspace)
++            return false;
++        const cwd = record.agent?.session?.header?.cwd;
++        return cwd !== void 0 && cwd !== workspace.path;
+     }
+     /**
+      * 通过 system-prompt/assemble waterfall 注入群聊/私聊额外 system prompt。
+@@ -237,7 +275,7 @@
+             sessionId: childId,
+             seed,
+             meta: {
+-                cwd: this.config.cwd || process.cwd(),
++                cwd: this.effectiveCwd(),
+                 parentSession: record.sessionId,
+                 seedLength: seed.length,
+                 ...(composed.agentPreset ? { agentPreset: composed.agentPreset } : {}),
+@@ -245,6 +283,7 @@
+             ...(effectiveRoute ? { agentOptions: effectiveRoute } : {}),
+             ...(composed.setup ? { setup: composed.setup } : {}),
+         });
++        await this.attachToWorkspace(childId, created.agent);
+         this.modelResolver.setSessionId(key, childId);
+         const oldHandle = record.handle;
+         record.sessionId = childId;
+@@ -364,12 +403,20 @@
+         }
+     }
+     /** 获取或恢复或创建会话（get → resume → create） */
+-    async getOrCreate(scope, peerId, senderId, replyTarget) {
++    async getOrCreate(scope, peerId, senderId, replyTarget, allowReset = true) {
+         const key = this.sessionKey(scope, peerId);
+         const existing = this.sessions.get(key);
+         if (existing) {
++            // 工作区变更后 header cwd 不会变：自动换新会话，避免继续继承旧 session
++            if (allowReset && this.isWorkspacePlacementStale(existing)) {
++                this.logger.info(`workspace changed, starting a new session: key=${key} session=${existing.sessionId}`);
++                await this.remove(scope, peerId);
++                return this.getOrCreate(scope, peerId, senderId, replyTarget, false);
++            }
+             existing.replyTarget = replyTarget;
+             existing.lastActivity = Date.now();
++            // 幂等重试：首次 attach 若因持久化时序失败，后续消息会再试一次
++            await this.attachToWorkspace(existing.sessionId, existing.agent);
+             return existing;
+         }
+         const route = this.modelResolver.getEffectiveRoute(key);
+@@ -404,7 +451,7 @@
+                 const created = await this.agents.create({
+                     sessionId,
+                     meta: {
+-                        cwd: this.config.cwd || process.cwd(),
++                        cwd: this.effectiveCwd(),
+                         ...(agentPreset ? { agentPreset } : {}),
+                     },
+                     ...(route ? { agentOptions: route } : {}),
+@@ -415,6 +462,7 @@
+                 this.logger.info(`created new session: key=${key} preset=${agentPreset ?? 'none'}`);
+             }
+         }
++        await this.attachToWorkspace(sessionId, agent);
+         const record = {
+             sessionKey: key,
+             sessionId,
+@@ -428,6 +476,12 @@
+             agentPreset,
+         };
+         this.sessions.set(key, record);
++        // 恢复到的旧会话若 cwd 与目标工作区不一致，自动换新会话（旧历史保留在旧 session）
++        if (allowReset && this.isWorkspacePlacementStale(record)) {
++            this.logger.info(`workspace changed, starting a new session: key=${key} session=${record.sessionId}`);
++            await this.remove(scope, peerId);
++            return this.getOrCreate(scope, peerId, senderId, replyTarget, false);
++        }
+         return record;
+     }
+     findBySessionId(sessionId) {
+--- a/dist/gateway/bootstrap.js
++++ b/dist/gateway/bootstrap.js
+@@ -12,6 +12,9 @@
+ import { startMediaCleanup } from "../media/media-cleaner.js";
+ import { ensureVisionInputModal, registerDescribeImageTool } from "../media/vision-tool.js";
+ import { registerSendFileTool } from "../media/send-file-tool.js";
++import { mkdir } from 'node:fs/promises';
++import { homedir } from 'node:os';
++import { isAbsolute, resolve } from 'node:path';
+ /**
+  * interaction 统一分发器：按 button_data 的顶层 `t` 判别字段，路由到对应
+  * channel（question / approval）。QQ 只有一个 interaction 入口，集中路由
+@@ -30,8 +33,59 @@
+         return manager.approvalChannel?.handleInteraction(event) ?? false;
+     return false;
+ }
++/**
++ * 解析并登记「新对话工作区」。
++ *
++ * - 支持 ~ 展开；相对路径按宿主进程 cwd 解析；
++ * - 目录不存在时递归创建；
++ * - 通过 ctx.workspaceRegistry 登记（已存在则复用），返回工作区实体供新会话 attach；
++ * - 登记失败不阻断启动，仅告警（会话仍使用该目录，只是不进入工作区列表）。
++ *
++ * @returns {{ path: string, workspace?: unknown }} 规范化路径 + 工作区实体；
++ *          未配置或目录不可用时返回 undefined（回落 cwd）。
++ */
++async function resolveWorkspace(ctx, workspace, logger) {
++    const raw = typeof workspace === 'string' ? workspace.trim() : '';
++    if (!raw)
++        return undefined;
++    let path = raw;
++    if (path === '~')
++        path = homedir();
++    else if (path.startsWith('~/'))
++        path = resolve(homedir(), path.slice(2));
++    if (!isAbsolute(path))
++        path = resolve(process.cwd(), path);
++    try {
++        await mkdir(path, { recursive: true });
++    }
++    catch (err) {
++        logger.error(`workspace unavailable: ${path} (${err instanceof Error ? err.message : String(err)}) — falling back to cwd`);
++        return undefined;
++    }
++    try {
++        const registry = ctx.get('workspaceRegistry');
++        if (registry && typeof registry.create === 'function') {
++            const registered = await registry.create(path);
++            logger.info(`workspace ready: ${registered.path}${registered.title ? ` (${registered.title})` : ''}`);
++            // 用 realpath 规范化后的 workspace.path 作为 session cwd，
++            // 保证 attachSession 的 canonical cwd 校验通过（符号链接场景）。
++            return { path: registered.path, workspace: registered };
++        }
++        logger.warn('workspaceRegistry unavailable — QQ conversations will not be grouped under a workspace');
++    }
++    catch (err) {
++        logger.warn(`workspace registration failed: ${path} (${err instanceof Error ? err.message : String(err)}) — sessions still use this directory`);
++    }
++    return { path, workspace: void 0 };
++}
++
+ export async function bootstrapGateway(ctx, agents, config, logger) {
++    // 解析「新对话工作区」：确保目录存在并登记为宿主工作区；失败/未配置时回落到 cwd。
++    const resolvedWorkspace = await resolveWorkspace(ctx, config.workspace, logger);
++    config = { ...config, workspace: resolvedWorkspace?.path };
+     const manager = new SessionManager(ctx, agents, config, logger);
++    // 新会话创建后需要显式 attach 才会出现在工作区列表中（见 SessionManager）
++    manager.workspace = resolvedWorkspace?.workspace;
+     // ── 初始化 QQ Bot SDK ──
+     const userAgent = buildUserAgent();
+     const bot = new QQBot({
+--- a/dist/setup/bind-routes.js
++++ b/dist/setup/bind-routes.js
+@@ -1,4 +1,5 @@
+ import { persistCredentialsToProfile, removeCredentialsFromProfile, updateProfileConfig, } from "./persist.js";
++import { isAbsolute } from 'node:path';
+ import { getProfileDir } from "../shared/index.js";
+ import { AccessControlSchema } from "../config.js";
+ import { BIND_CONFIG_PATH, BIND_MANUAL_PATH, BIND_REFRESH_PATH, BIND_STATE_PATH, BIND_UNBIND_PATH, } from "../shared/bind-protocol.js";
+@@ -7,7 +8,7 @@
+ /** 可经 UI 编辑的配置键（白名单：只收用户必要的字段，其余走 patch/env） */
+ const EDITABLE_CONFIG_KEYS = new Set([
+     'requireMention', 'streaming', 'showToolResults', 'debug',
+-    'provider', 'model', 'preset',
++    'provider', 'model', 'preset', 'workspace',
+     'groupPrompt', 'directPrompt',
+     'access',
+ ]);
+@@ -20,6 +21,15 @@
+     provider: stringSchema('provider'),
+     model: stringSchema('model'),
+     preset: stringSchema('preset'),
++    workspace: (v) => {
++        const value = stringSchema('workspace')(v).trim();
++        if (value === '')
++            return '';
++        if (!isAbsolute(value) && value !== '~' && !value.startsWith('~/')) {
++            throw new TypeError('workspace 必须是绝对路径（或以 ~ 开头）');
++        }
++        return value;
++    },
+     groupPrompt: stringSchema('groupPrompt'),
+     directPrompt: stringSchema('directPrompt'),
+     access: (v) => AccessControlSchema(v),
+@@ -257,7 +267,8 @@
+         const current = options.currentConfig?.() ?? {};
+         // appSecret 永不回传；其余（含只读 cwd）原样回显
+         const { appSecret: _s, ...safe } = current;
+-        sendJson(res, 200, { config: safe });
++        // cwd 回显生效的默认工作目录；workspace 始终回显（未配置为空串）
++        sendJson(res, 200, { config: { ...safe, cwd: current.cwd || process.cwd(), workspace: current.workspace ?? '' } });
+         return;
+     }
+     let body;
+--- a/dist/shared/utils.js
++++ b/dist/shared/utils.js
+@@ -44,6 +44,10 @@
+  * @param baseDir - 起始目录，缺省为插件根（可注入便于测试）
+  */
+ export function getProfileDir(baseDir = PLUGIN_ROOT) {
++    // EX: profile 启动器会设置 DSH_PROFILE_DIR；优先使用它，保证本地/链接安装也能定位 profile。
++    const envProfileDir = process.env.DSH_PROFILE_DIR;
++    if (envProfileDir !== undefined && envProfileDir !== '' && existsSync(envProfileDir))
++        return envProfileDir;
+     // 主策略：跨过 node_modules 边界后，优先命中 cordis.patch.yml（凭据写入
+     // 目标），其次 pnpm-workspace.yaml。跨越守卫是关键——插件包自身随包携带
+     // cordis.patch.yml（dsh.bundle.patch 分发物）、源码 checkout 根也有同名
+--- a/lib/client.js
++++ b/lib/client.js
+@@ -861,7 +861,15 @@
+ 				onChange: (v) => {
+ 					patch("directPrompt", v);
+ 				}
+-			}), form.cwd !== void 0 ? (0, react.createElement)("div", { className: "imqb2-field" }, (0, react.createElement)("div", { className: "imqb2-head" }, (0, react.createElement)("span", { className: "imqb2-label" }, "Agent 工作目录"), (0, react.createElement)("span", { className: "imqb2-hint" }, "只读")), (0, react.createElement)("p", { className: "imqb2-readonly" }, form.cwd)) : null, (0, react.createElement)("div", { className: "imqb2-footer" }, result !== null ? (0, react.createElement)("p", { className: `imqb2-note${result.ok ? " imqb2-note--ok" : " imqb2-note--error"}` }, (result.ok ? "" : "⚠️ ") + result.message) : dirty ? (0, react.createElement)("p", { className: "imqb2-note" }, "保存后插件将重载，进行中的机器人会话将重置") : (0, react.createElement)("p", { className: "imqb2-note" }), (0, react.createElement)("button", {
++			}), (0, react.createElement)("div", { className: "imqb2-group-title" }, "工作区"), (0, react.createElement)(FieldRow, {
++    label: "新对话所在工作区",
++    help: "新会话在该目录中创建，并显示在宿主对应的项目/工作区下；留空则使用 Agent 工作目录。目录不存在时自动创建并登记为工作区。",
++    value: form.workspace ?? "",
++    placeholder: "留空使用 " + (form.cwd || "Agent 工作目录"),
++    onChange: (v) => {
++        patch("workspace", v);
++    }
++}), form.cwd !== void 0 ? (0, react.createElement)("div", { className: "imqb2-field" }, (0, react.createElement)("div", { className: "imqb2-head" }, (0, react.createElement)("span", { className: "imqb2-label" }, "Agent 工作目录"), (0, react.createElement)("span", { className: "imqb2-hint" }, "只读")), (0, react.createElement)("p", { className: "imqb2-readonly" }, form.cwd)) : null, (0, react.createElement)("div", { className: "imqb2-footer" }, result !== null ? (0, react.createElement)("p", { className: `imqb2-note${result.ok ? " imqb2-note--ok" : " imqb2-note--error"}` }, (result.ok ? "" : "⚠️ ") + result.message) : dirty ? (0, react.createElement)("p", { className: "imqb2-note" }, "保存后插件将重载，进行中的机器人会话将重置") : (0, react.createElement)("p", { className: "imqb2-note" }), (0, react.createElement)("button", {
+ 				className: "imqb2-save",
+ 				type: "submit",
+ 				disabled: busy || !dirty

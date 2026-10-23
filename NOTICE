@@ -1,0 +1,21 @@
+QQBot-EX
+========
+
+QQBot-EX is a fork of @tencent-connect/dsh-qqbot 0.5.2:
+
+  https://github.com/tencent-connect/dsh-qqbot
+  Copyright (c) 2026 Tencent Connect
+  Licensed under the MIT License (see LICENSE).
+
+QQBot-EX keeps the upstream plugin's MIT license. The following changes are
+released under the same license:
+
+  - configurable workspace for new QQ conversations (`workspace` config);
+  - explicit `workspace.attachSession()` after creating/resuming a session;
+  - automatic new session when the configured workspace differs from the
+    session header's cwd;
+  - `DSH_PROFILE_DIR` fallback in `getProfileDir()` for linked/local installs;
+  - settings-page field and documentation for the workspace option.
+
+QQBot-EX is not an official Tencent or DeepSeek release. "QQ", "QQ Bot",
+"DeepSeek" and "DeepSeek Harness" are trademarks of their respective owners.

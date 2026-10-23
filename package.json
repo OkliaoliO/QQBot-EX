@@ -1,0 +1,101 @@
+{
+  "name": "dsh-qqbot-ex",
+  "version": "0.5.2-ex.1",
+  "description": "QQ Bot IM channel plugin for deepseek-harness (dsh) — EX fork with a configurable workspace for new conversations",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    }
+  },
+  "files": [
+    "dist",
+    "lib",
+    "patches",
+    "scripts",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "verify": "node scripts/verify.mjs"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "qqbot",
+    "cordis",
+    "plugin",
+    "workspace"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OkliaoliO/QQBot-EX.git"
+  },
+  "homepage": "https://github.com/OkliaoliO/QQBot-EX#readme",
+  "bugs": {
+    "url": "https://github.com/OkliaoliO/QQBot-EX/issues"
+  },
+  "engines": {
+    "node": ">=20.3.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.0-rc.2": "compatible",
+        "0.2.1-rc.2": "compatible"
+      },
+      "note": "基于 @tencent-connect/dsh-qqbot 0.5.2。已在 DSH Desktop 0.2.1-rc.2 验证：扫码绑定、配置重载、QQ 会话按 workspace 归组；工作区变更自动换会话由单元测试覆盖。上游大版本升级后需重新验收 settings.section / sidebar 席位契约与 session header 语义。"
+    }
+  },
+  "dependencies": {
+    "@tencent-connect/qqbot-connector": "1.2.0",
+    "@tencent-connect/qqbot-nodejs": "^1.0.5",
+    "js-yaml": "^4.1.0",
+    "qrcode": "^1.5.4"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.1",
+    "@deepseek-ai/dsh-agent": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-user-approval": ">=0.1.0-rc.6",
+    "@deepseek-ai/schemastery": ">=3.18.1",
+    "@tencent-connect/qqbot-connector": "1.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": false
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": false
+    },
+    "@deepseek-ai/dsh-agent": {
+      "optional": false
+    },
+    "@deepseek-ai/dsh-session": {
+      "optional": false
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": false
+    },
+    "@deepseek-ai/dsh-user-approval": {
+      "optional": true
+    }
+  }
+}

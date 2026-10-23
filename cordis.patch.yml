@@ -1,0 +1,29 @@
+# QQBot-EX bundle patch
+#
+# 安装前请先移除或禁用上游 @tencent-connect/dsh-qqbot bundle：
+# 两者都插入 id 为 im-qqbot 的 row，同时存在会重复注册网关/路由。
+#
+# 环境变量（可选；更推荐在设置页扫码绑定，凭据会自动写入 profile patch）：
+#   QQBOT_APPID  - QQ Bot AppID
+#   QQBOT_SECRET - QQ Bot AppSecret
+#
+# 配置优先级：bundle patch < profile cordis.patch.yml < --patch
+# 因此 profile patch 里的 im-qqbot.config.workspace 会覆盖这里的默认值。
+- insert:
+    - id: im-qqbot
+      name: 'dsh-qqbot-ex'
+      config:
+        # 新对话所在工作区目录（绝对路径）；留空回落到 cwd / profile 目录
+        workspace: ''
+        requireMention: true
+        textChunkLimit: 4500
+        sessionIdleTimeout: 1800000
+        maxQueue: 20
+        processingTimeoutMs: 1800000
+        historyLimit: 10
+        access:
+          c2cMode: open
+          c2cAllow: []
+          groupMode: open
+          groupAllow: []
+        debug: false
