@@ -2,6 +2,12 @@
 
 本文件记录 QQBot-EX 相对上游 `@tencent-connect/dsh-qqbot` 的变化。
 
+## [0.5.2-ex.6] - 2026-10-23
+
+### 移除
+
+- 移除 `qqbot_send_text` 工具（`dist/text/send-text-tool.js` 及 `bootstrap.js` 中的注册）。换行分条已覆盖该场景；且该工具在回合中途立即发送，会与整轮缓冲的正文顺序冲突。
+
 ## [0.5.2-ex.5] - 2026-10-23
 
 ### 修复

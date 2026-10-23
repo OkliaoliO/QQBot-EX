@@ -12,7 +12,6 @@ import { setupMiddlewares } from "./middleware-setup.js";
 import { startMediaCleanup } from "../media/media-cleaner.js";
 import { ensureVisionInputModal, registerDescribeImageTool } from "../media/vision-tool.js";
 import { registerSendFileTool } from "../media/send-file-tool.js";
-import { registerSendTextTool } from "../text/send-text-tool.js";
 import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
@@ -194,9 +193,6 @@ export async function bootstrapGateway(ctx, agents, config, logger) {
         sendFile: (target, source, opts) => bot.sendFile(resolveReplyTarget(target, replyLimiter, false), source, opts),
     };
     registerSendFileTool(ctx, mediaSender, manager, config, logger);
-    // ── 文本分条发送工具注册（qqbot_send_text） ──
-    // 走 sender（含被动回复限额与 msgId 兜底），每轮最多 3 次。
-    registerSendTextTool(ctx, sender, manager, logger);
     // ── 生命周期 ──
     ctx
         .effect(() => {

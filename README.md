@@ -4,13 +4,12 @@
 > QQBot-EX 不是腾讯或 DeepSeek 的官方发布，只是基于上游 MIT 许可代码做的定制分支。
 
 上游插件负责把 QQ 和 DSH 接起来：私聊/群聊、扫码绑定、流式输出、富媒体、视觉理解、附件发送、`/new` `/compact` `/model` `/preset` 等命令都原样保留。
-本仓库在上游之上加了四件事：
+本仓库在上游之上加了三件事：
 
 | 能力 | 说明 |
 |---|---|
 | **工作区归属** | 每个 QQ 对话固定落在指定目录，不再全部落到「未分类」 |
 | **换行分条** | 一条回复按换行拆成多条 QQ 消息（最多 4 条），聊天更像真人 |
-| **`qqbot_send_text`** | 可选工具，在回复之外手动补发一条独立消息 |
 | **安装兼容** | 本地/`link:`/`file:` 安装时也能正确定位 profile |
 
 ---
@@ -57,18 +56,7 @@ DSH 的工作区归属由两层决定：
 
 拆分逻辑在 `dist/transport/split-bubbles.js`，由 `dist/transport/outbound.js`（静态路径）和 `outbound-buffer.js`（缓冲/降级路径）调用。
 
-### 3. `qqbot_send_text`（可选）
-
-需要在正文之外补一条消息时，可让模型调用内置工具 `qqbot_send_text(text)`：
-
-- 立即把一段文本作为一条独立 QQ 消息发出；
-- 每条用户消息最多调用 **3 次**；
-- 走插件 `sender`，带 msgId 兜底与被动回复限额管控；
-- 只在 QQ 会话内可用，其他会话返回「无法确定发送目标」。
-
-一般场景用换行分条就够了，这个工具是补充。
-
-### 4. 本地/链接安装兼容
+### 3. 本地/链接安装兼容
 
 `getProfileDir()` 优先读取 `DSH_PROFILE_DIR`。dsh 启动 profile 时会设置该变量，所以用本地路径、`link:` 或 `file:` 方式安装时，扫码凭据仍能写回正确的 profile，而不是因为插件目录不在 `node_modules` 下而定位失败。
 
@@ -165,12 +153,11 @@ profile patch 示例：
 |---|---|
 | `dist/config.js` / `dist/config.d.ts` | 新增 `workspace` 配置 |
 | `dist/session/session-manager.js` | `effectiveCwd()`、`attachToWorkspace()`、工作区不一致自动换会话 |
-| `dist/gateway/bootstrap.js` | 解析目录、登记工作区、注入实体；注册 `qqbot_send_text` |
+| `dist/gateway/bootstrap.js` | 解析目录、登记工作区、注入实体 |
 | `dist/setup/bind-routes.js` | 配置路由读写 `workspace`，GET 回显生效 `cwd` |
 | `dist/shared/utils.js` | `getProfileDir()` 优先使用 `DSH_PROFILE_DIR` |
 | `dist/transport/split-bubbles.js` | **新增**：按换行拆气泡 |
 | `dist/transport/outbound.js` / `outbound-buffer.js` | 调用 `splitBubbles()` |
-| `dist/text/send-text-tool.js` | **新增**：`qqbot_send_text` 工具 |
 | `lib/client.js` | 设置页新增「新对话所在工作区」输入框；`__ModuleLoader__.load` 的 `id` 改为本包名 |
 
 完整 diff 见 [`patches/qqbot-ex.patch`](patches/qqbot-ex.patch)（相对上游 `0.5.2`，可用 `git apply -p1` 打到干净包上）。
@@ -191,7 +178,7 @@ profile patch 示例：
    ```
 
    脚本会按锚点改写 `dist/config.js`、`config.d.ts`、`session-manager.js`、`bootstrap.js`、`bind-routes.js`、`shared/utils.js`、`lib/client.js`；锚点不匹配时会拒绝写入。
-   ⚠️ 换行分条与 `qqbot_send_text` 是新增文件 + 少量调用，不在此脚本内，需按 `patches/qqbot-ex.patch` 手动补。
+   ⚠️ 换行分条是新增文件 + 少量调用，不在此脚本内，需按 `patches/qqbot-ex.patch` 手动补。
 
 3. 自检：
 

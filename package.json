@@ -1,6 +1,6 @@
 {
   "name": "dsh-qqbot-ex",
-  "version": "0.5.2-ex.5",
+  "version": "0.5.2-ex.6",
   "description": "QQ Bot IM channel plugin for deepseek-harness (dsh) — EX fork with a configurable workspace for new conversations",
   "type": "module",
   "main": "./dist/index.js",
